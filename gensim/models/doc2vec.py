@@ -118,9 +118,11 @@ except:
             neg_labels = zeros(model.negative + 1)
             neg_labels[0] = 1.
 
+        j = 0
         for pos, word in enumerate(sentence):
             if word is None:
                 continue  # OOV word in the input sentence => skip
+            j += 1
             reduced_window = random.randint(model.window)  # `b` in the original doc2vec code
             start = max(0, pos - model.window + reduced_window)
             window_pos = enumerate(sentence[start : pos + model.window + 1 - reduced_window], start)
@@ -132,7 +134,23 @@ except:
             if train_lbls:
                 model.syn0[lbl_indices] += neu1e
 
-        return len([word for word in sentence if word is not None])
+        for syntax in syntaxes:
+            if syntax.word not in model.vocab:
+                continue
+            j += 1
+            #logging.info('%s -----' % (model.vocab[syntax.word]))
+            w2_indices = []
+            for cxt_word in syntax.cxt_words:
+                if cxt_word not in model.vocab:
+                    continue
+                w2_indices.append(model.vocab[cxt_word].index)
+            l1 = np_sum(model.syn0[w2_indices], axis=0) # 1 x layer1_size
+            if w2_indices and model.cbow_mean:
+                l1 /= len(w2_indices)
+            neu1e = train_cbow_pair(model, model.vocab[syntax.word], word2_indices, l1, alpha, neg_labels, train_words, train_words)
+            model.syn0[model.vocab[syntax.word].index] += neu1e
+
+        return j
 
 
 class LabeledSentence(object):
@@ -187,7 +205,7 @@ class Doc2Vec(Word2Vec):
     """Class for training, using and evaluating neural networks described in http://arxiv.org/pdf/1405.4053v2.pdf"""
     def __init__(self, sentences=None, size=300, alpha=0.025, window=8, min_count=5,
                  sample=0, seed=1, workers=1, min_alpha=0.0001, dm=1, hs=1, negative=0,
-                 dm_mean=0, train_words=True, train_lbls=True, iter=1, **kwargs):
+                 dm_mean=0, train_words=True, train_lbls=True, iter=1, gwindow=5, **kwargs):
         """
         Initialize the model from an iterable of `sentences`. Each sentence is a
         LabeledSentence object that will be used for training.
@@ -230,6 +248,7 @@ class Doc2Vec(Word2Vec):
                           sg=(1+dm) % 2, hs=hs, negative=negative, cbow_mean=dm_mean, iter=iter, **kwargs)
         self.train_words = train_words
         self.train_lbls = train_lbls
+        self.gwindow = gwindow
         if sentences is not None:
             self.build_vocab(sentences)
             sentences = utils.RepeatCorpusNTimes(sentences, iter)
