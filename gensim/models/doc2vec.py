@@ -50,12 +50,13 @@ from gensim import utils  # utility fnc for pickling, common scipy operations et
 from gensim.models.word2vec import Word2Vec, Vocab, train_cbow_pair, train_sg_pair
 
 try:
-    from gensim.models.doc2vec_inner import train_sentence_dbow, train_sentence_dm, FAST_VERSION
+    #from gensim.models.doc2vec_inner import train_sentence_dbow, train_sentence_dm, FAST_VERSION
+    raise Exception
 except:
     # failed... fall back to plain numpy (20-80x slower training than the above)
     FAST_VERSION = -1
 
-    def train_sentence_dbow(model, sentence, lbls, alpha, work=None, train_words=True, train_lbls=True):
+    def train_sentence_dbow(model, sentence, lbls, syntaxes, alpha, work=None, train_words=True, train_lbls=True):
         """
         Update distributed bag of words model by training on a single sentence.
 
@@ -66,23 +67,38 @@ except:
         will use the optimized version from doc2vec_inner instead.
 
         """
+        #for v in sentence:
+        #    logging.info('%s, %s' % (v, model.index2word[v.index]))
         neg_labels = []
         if model.negative:
             # precompute negative labels
             neg_labels = zeros(model.negative + 1)
             neg_labels[0] = 1.0
 
+        j = 0
         for label in lbls:
             if label is None:
                 continue  # OOV word in the input sentence => skip
             for word in sentence:
                 if word is None:
                     continue  # OOV word in the input sentence => skip
+                j += 1
+                #logging.info('%s - %s' % (model.index2word[word.index], model.index2word[label.index]))
                 train_sg_pair(model, word, label, alpha, neg_labels, train_words, train_lbls)
 
-        return len([word for word in sentence if word is not None])
+        for syntax in syntaxes:
+            if syntax.word not in model.vocab:
+                continue
+            for cxt_word in syntax.cxt_words:
+                if cxt_word not in model.vocab:
+                    continue
+                j += 1
+                #logging.info('%s - %s' % (cxt_word, syntax.word))
+                train_sg_pair(model, model.vocab[cxt_word], model.vocab[syntax.word], alpha, neg_labels, train_words, train_lbls)
 
-    def train_sentence_dm(model, sentence, lbls, alpha, work=None, neu1=None, train_words=True, train_lbls=True):
+        return j
+
+    def train_sentence_dm(model, sentence, lbls, syntaxes, alpha, work=None, neu1=None, train_words=True, train_lbls=True):
         """
         Update distributed memory model by training on a single sentence.
 
@@ -138,11 +154,40 @@ class LabeledSentence(object):
         return '%s(%s, %s)' % (self.__class__.__name__, self.words, self.labels)
 
 
+class Syntax(object):
+    def __init__(self, word, cxt_words):
+        self.word = word
+        self.cxt_words = cxt_words
+
+    def __str__(self):
+        return '%s(%s, %s)' % (self.__class__.__name__, self.word, self.cxt_words)
+
+
+class LabeledSyntaxSentence(object):
+    """
+    A single labeled sentence = text item.
+    Replaces "sentence as a list of words" from Word2Vec.
+
+    """
+    def __init__(self, words, labels, syntaxes):
+        """
+        `words` is a list of tokens (unicode strings), `labels` a
+        list of text labels associated with this text.
+
+        """
+        self.words = words
+        self.labels = labels
+        self.syntaxes = syntaxes
+
+    def __str__(self):
+        return '%s(%s, %s, %s)' % (self.__class__.__name__, self.words, self.labels, self.syntaxes)
+
+
 class Doc2Vec(Word2Vec):
     """Class for training, using and evaluating neural networks described in http://arxiv.org/pdf/1405.4053v2.pdf"""
     def __init__(self, sentences=None, size=300, alpha=0.025, window=8, min_count=5,
                  sample=0, seed=1, workers=1, min_alpha=0.0001, dm=1, hs=1, negative=0,
-                 dm_mean=0, train_words=True, train_lbls=True, **kwargs):
+                 dm_mean=0, train_words=True, train_lbls=True, iter=1, **kwargs):
         """
         Initialize the model from an iterable of `sentences`. Each sentence is a
         LabeledSentence object that will be used for training.
@@ -182,11 +227,12 @@ class Doc2Vec(Word2Vec):
         """
         Word2Vec.__init__(self, size=size, alpha=alpha, window=window, min_count=min_count,
                           sample=sample, seed=seed, workers=workers, min_alpha=min_alpha,
-                          sg=(1+dm) % 2, hs=hs, negative=negative, cbow_mean=dm_mean, **kwargs)
+                          sg=(1+dm) % 2, hs=hs, negative=negative, cbow_mean=dm_mean, iter=iter, **kwargs)
         self.train_words = train_words
         self.train_lbls = train_lbls
         if sentences is not None:
             self.build_vocab(sentences)
+            sentences = utils.RepeatCorpusNTimes(sentences, iter)
             self.train(sentences)
 
     @staticmethod
@@ -204,6 +250,12 @@ class Doc2Vec(Word2Vec):
                     vocab[label].count += sentence_length
                 else:
                     vocab[label] = Vocab(count=sentence_length)
+            for syntax in sentence.syntaxes:
+                total_words += 1
+                if syntax.word in vocab:
+                    vocab[syntax.word].count += sentence_length
+                else:
+                    vocab[syntax.word] = Vocab(count=sentence_length, is_syntax=True)
             for word in sentence.words:
                 total_words += 1
                 if word in vocab:
@@ -220,13 +272,13 @@ class Doc2Vec(Word2Vec):
             sampled = [self.vocab[word] for word in sentence.words
                        if word in self.vocab and (self.vocab[word].sample_probability >= 1.0 or
                                                   self.vocab[word].sample_probability >= random.random_sample())]
-            yield (sampled, [self.vocab[word] for word in sentence.labels if word in self.vocab])
+            yield (sampled, [self.vocab[word] for word in sentence.labels if word in self.vocab], [syntax for syntax in sentence.syntaxes if syntax.word in self.vocab])
 
     def _get_job_words(self, alpha, work, job, neu1):
         if self.sg:
-            return sum(train_sentence_dbow(self, sentence, lbls, alpha, work, self.train_words, self.train_lbls) for sentence, lbls in job)
+            return sum(train_sentence_dbow(self, sentence, lbls, syntaxes, alpha, work, self.train_words, self.train_lbls) for sentence, lbls, syntaxes in job)
         else:
-            return sum(train_sentence_dm(self, sentence, lbls, alpha, work, neu1, self.train_words, self.train_lbls) for sentence, lbls in job)
+            return sum(train_sentence_dm(self, sentence, lbls, syntaxes, alpha, work, neu1, self.train_words, self.train_lbls) for sentence, lbls, syntaxes in job)
 
     def __str__(self):
         return "Doc2Vec(vocab=%s, size=%s, alpha=%s)" % (len(self.index2word), self.layer1_size, self.alpha)

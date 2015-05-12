@@ -180,7 +180,16 @@ def train_sg_pair(model, word, word2, alpha, labels, train_w1=True, train_w2=Tru
         while len(word_indices) < model.negative + 1:
             w = model.table[random.randint(model.table.shape[0])]
             if w != word.index:
+                # the negative samples for syntax words, can only be other syntaxs.
+                # the negative samples for non syntax words, cannot be syntax ones.
+                candidate = model.vocab[model.index2word[w]]
+                if word.is_syntax and not candidate.is_syntax:
+                    continue
+                if candidate.is_syntax and not word.is_syntax:
+                    continue
                 word_indices.append(w)
+        #for wi in word_indices:
+        #    logging.info('negative: %s' % model.index2word[wi])
         l2b = model.syn1neg[word_indices]  # 2d matrix, k+1 x layer1_size
         fb = 1. / (1. + exp(-dot(l1, l2b.T)))  # propagate hidden -> output
         gb = (labels - fb) * alpha  # vector of error gradients multiplied by the learning rate
@@ -209,6 +218,13 @@ def train_cbow_pair(model, word, word2_indices, l1, alpha, labels, train_w1=True
         while len(word_indices) < model.negative + 1:
             w = model.table[random.randint(model.table.shape[0])]
             if w != word.index:
+                # the negative samples for syntax words, can only be other syntaxs.
+                # the negative samples for non syntax words, cannot be syntax ones.
+                candidate = model.vocab[model.index2word[w]]
+                if word.is_syntax and not candidate.is_syntax:
+                    continue
+                if candidate.is_syntax and not word.is_syntax:
+                    continue
                 word_indices.append(w)
         l2b = model.syn1neg[word_indices] # 2d matrix, k+1 x layer1_size
         fb = 1. / (1. + exp(-dot(l1, l2b.T))) # propagate hidden -> output
@@ -225,6 +241,7 @@ class Vocab(object):
     """A single vocabulary item, used internally for constructing binary trees (incl. both word leaves and inner nodes)."""
     def __init__(self, **kwargs):
         self.count = 0
+        self.is_syntax = False
         self.__dict__.update(kwargs)
 
     def __lt__(self, other):  # used for sorting in a priority queue
@@ -309,12 +326,12 @@ class Word2Vec(utils.SaveLoad):
         self.cbow_mean = int(cbow_mean)
         self.hashfxn = hashfxn
         self.iter = iter
-        if sentences is not None:
-            if isinstance(sentences, GeneratorType):
-                raise TypeError("You can't pass a generator as the sentences argument. Try an iterator.")
-            self.build_vocab(sentences)
-            sentences = utils.RepeatCorpusNTimes(sentences, iter)
-            self.train(sentences)
+        #if sentences is not None:
+        #    if isinstance(sentences, GeneratorType):
+        #        raise TypeError("You can't pass a generator as the sentences argument. Try an iterator.")
+        #    self.build_vocab(sentences)
+        #    sentences = utils.RepeatCorpusNTimes(sentences, iter)
+        #    self.train(sentences)
 
     def make_table(self, table_size=100000000, power=0.75):
         """
